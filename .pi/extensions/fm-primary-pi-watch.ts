@@ -203,10 +203,10 @@ function replacementCoordinatorFor(handoff: string): ReplacementCoordinator {
 }
 let replacementCoordinator = replacementCoordinatorFor(actionableHandoff);
 
-function applyPiHome(home: string): void {
+function applyPiHome(home: string, boundState: string, boundConfig: string): void {
   fmHome = home;
-  state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
-  config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
+  state = boundState;
+  config = boundConfig;
   armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
   marker = `${state}/.pi-watch-extension-loaded`;
   handoffDir = `${state}/extensions/pi-primary-watch`;
@@ -224,7 +224,7 @@ function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: s
     console.error(`firstmate: Pi home binding refused: ${result.reason}`);
     return false;
   }
-  applyPiHome(result.home);
+  applyPiHome(result.home, result.state, result.config);
   return true;
 }
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();

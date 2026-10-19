@@ -20,6 +20,7 @@ const extensionDir = dirname(extensionFile);
 const root = resolve(extensionDir, "../..");
 let fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
 let state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
+let config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 let marker = `${state}/.pi-turnend-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 
@@ -30,11 +31,12 @@ function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: s
     return false;
   }
   fmHome = result.home;
-  state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
+  state = result.state;
+  config = result.config;
   marker = `${state}/.pi-turnend-extension-loaded`;
   process.env.FM_HOME = fmHome;
   process.env.FM_STATE_OVERRIDE = state;
-  process.env.FM_CONFIG_OVERRIDE = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
+  process.env.FM_CONFIG_OVERRIDE = config;
   return true;
 }
 

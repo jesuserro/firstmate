@@ -27,7 +27,7 @@ const manager = {
 const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
 const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, process.env.FM_REASON);
 if (process.env.FM_EXPECTED === "ok") {
-  if (!result.ok || result.home !== process.env.FM_HOME) throw new Error(`unexpected result: ${JSON.stringify(result)}`);
+  if (!result.ok || result.home !== process.env.FM_HOME || result.state !== `${process.env.FM_HOME}/state` || result.config !== `${process.env.FM_HOME}/config`) throw new Error(`unexpected result: ${JSON.stringify(result)}`);
   if (appended.length !== 1) throw new Error(`fresh session did not record exactly one binding: ${JSON.stringify(appended)}`);
   if (appended[0].data.schema !== "firstmate.pi-home-binding.v1") throw new Error("binding schema missing");
 } else if (result.ok) {
@@ -132,7 +132,7 @@ import { pathToFileURL } from "node:url";
 const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
 const manager = { getSessionFile: () => process.env.FM_SESSION_FILE, getEntries: () => JSON.parse(process.env.FM_ENTRIES) };
 const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "resume");
-if (!result.ok) throw new Error(`legitimate in-home symlink was rejected: ${JSON.stringify(result)}`);
+if (!result.ok || result.state !== `${process.env.FM_HOME}/state-real/new`) throw new Error(`legitimate in-home symlink was not canonicalized: ${JSON.stringify(result)}`);
 EOF
 
 session_file="$TMP_ROOT/session-ambiguous.jsonl"

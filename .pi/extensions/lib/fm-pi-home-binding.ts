@@ -22,7 +22,7 @@ export type PiHomeContext = {
 };
 
 export type PiHomeResolution =
-  | { ok: true; home: string; recorded: boolean }
+  | { ok: true; home: string; state: string; config: string; recorded: boolean }
   | { ok: false; reason: string };
 
 type Binding = {
@@ -125,6 +125,13 @@ function safeOverride(home: string, value: string | undefined, label: string): s
   }
 }
 
+function boundPaths(home: string): { state: string; config: string } {
+  const state = safeOverride(home, process.env.FM_STATE_OVERRIDE || `${home}/state`, "FM_STATE_OVERRIDE");
+  const config = safeOverride(home, process.env.FM_CONFIG_OVERRIDE || `${home}/config`, "FM_CONFIG_OVERRIDE");
+  if (!state || !config) throw new Error("Pi home state/config paths could not be resolved safely");
+  return { state, config };
+}
+
 function sessionBindings(ctx: PiHomeContext): Binding[] {
   const entries = ctx.sessionManager?.getEntries?.() ?? [];
   const bindings: Binding[] = [];
@@ -171,7 +178,8 @@ export function resolvePiHome(
       // Explicitly fresh sessions may operate in ephemeral mode when Pi does
       // not expose a persistent session identity. They cannot be restored
       // safely, so no binding is claimed or written.
-      return { ok: true, home: fallback, recorded: false };
+      const paths = boundPaths(fallback);
+      return { ok: true, home: fallback, ...paths, recorded: false };
     }
     return { ok: false, reason: "persistent Pi session identity is unavailable for this session reason" };
   }
@@ -190,12 +198,11 @@ export function resolvePiHome(
   const boundHome = homes[0];
   if (boundHome) {
     try {
-      safeOverride(boundHome, process.env.FM_STATE_OVERRIDE, "FM_STATE_OVERRIDE");
-      safeOverride(boundHome, process.env.FM_CONFIG_OVERRIDE, "FM_CONFIG_OVERRIDE");
+      const paths = boundPaths(boundHome);
+      return { ok: true, home: boundHome, ...paths, recorded: true };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };
     }
-    return { ok: true, home: boundHome, recorded: true };
   }
 
   // A restored session without an identity cannot safely be upgraded from the
@@ -211,9 +218,9 @@ export function resolvePiHome(
   if (!persistEntry) {
     return { ok: false, reason: "Pi session manager cannot persist a Firstmate home binding" };
   }
+  let paths: { state: string; config: string };
   try {
-    safeOverride(fallback, process.env.FM_STATE_OVERRIDE, "FM_STATE_OVERRIDE");
-    safeOverride(fallback, process.env.FM_CONFIG_OVERRIDE, "FM_CONFIG_OVERRIDE");
+    paths = boundPaths(fallback);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
@@ -222,5 +229,5 @@ export function resolvePiHome(
   } catch (error) {
     return { ok: false, reason: `could not persist Pi session home binding: ${error instanceof Error ? error.message : String(error)}` };
   }
-  return { ok: true, home: fallback, recorded: true };
+  return { ok: true, home: fallback, ...paths, recorded: true };
 }
