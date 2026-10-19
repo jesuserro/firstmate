@@ -37,6 +37,7 @@ install_pi_watch_extension_fixture() {
   cp "$ROOT/.pi/extensions/lib/fm-async-exec.ts" "$repo/.pi/extensions/lib/fm-async-exec.ts"
   cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-pi-home-binding.ts" "$repo/.pi/extensions/lib/fm-pi-home-binding.ts"
   mkdir -p "$repo/bin"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
   chmod +x "$repo/bin/fm-operational-input.sh"
@@ -93,8 +94,9 @@ import { pathToFileURL } from "node:url";
 let handler = null;
 let notification = "";
 let prompt = "";
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) { handlers.set(event, handler); },
   registerCommand(name, options) {
     if (name === "fm-watch-arm-pi") handler = options.handler;
   },
@@ -169,8 +171,9 @@ import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 let tool = null;
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) { handlers.set(event, handler); },
   registerCommand() {},
   registerTool(candidate) {
     if (candidate.name === "fm_watch_arm_pi") tool = candidate;
@@ -2951,8 +2954,9 @@ const version = `sha256:${createHash("sha256").update(readFileSync(process.env.P
 // the real session sits above a nested `pi --help`.
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.ppid}\n`);
 
+const handlers = new Map();
 const pi = {
-  on() {},
+  on(event, handler) { handlers.set(event, handler); },
   registerCommand() {},
   registerTool() {},
   sendUserMessage: async () => {},
@@ -2960,6 +2964,8 @@ const pi = {
 async function load() {
   const mod = await import(pathToFileURL(process.env.PLUGIN).href);
   mod.default(pi);
+  writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+  await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 }
 function expectBoundToThisProcess(label) {
   const lines = readFileSync(marker, "utf8").split("\n");
@@ -3141,8 +3147,9 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 
 const startup = makePi();
 mod.default(startup.pi);
+await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
 if (!/^generation=[1-9][0-9]* phase=active$/.test(extensionOwner())) {
-  throw new Error(`extension bind did not publish its pre-lock active generation: ${extensionOwner()}`);
+  throw new Error(`extension bind did not publish its session-start active generation: ${extensionOwner()}`);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
