@@ -23,8 +23,8 @@ let state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 let marker = `${state}/.pi-turnend-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 
-function bindPiHome(ctx: PiHomeContext | undefined, reason?: string): boolean {
-  const result = resolvePiHome(ctx, fmHome, reason, root);
+function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: string): boolean {
+  const result = resolvePiHome(ctx, fmHome, reason, root, pi.appendEntry.bind(pi));
   if (!result.ok) {
     console.error(`firstmate: Pi home binding refused: ${result.reason}`);
     return false;
@@ -583,7 +583,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on?.("session_start", (event, ctx) => {
     const reason = String((event as { reason?: unknown }).reason ?? "");
-    if (!bindPiHome(ctx, reason)) return;
+    if (!bindPiHome(ctx, pi, reason)) return;
     markLoaded();
     const source = reason === "startup"
       ? startupRebuildSource(ctx) ?? "startup"

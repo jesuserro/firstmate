@@ -2968,6 +2968,7 @@ const pi = {
   on(event, handler) { handlers.set(event, handler); },
   registerCommand() {},
   registerTool() {},
+  appendEntry(_type, data) { sessionManager.appendCustomEntry(_type, data); },
   sendUserMessage: async () => {},
 };
 async function load() {
@@ -3105,6 +3106,7 @@ function makePi() {
     registerTool(candidate) {
       if (candidate.name === "fm_watch_arm_pi") tool = candidate;
     },
+    appendEntry(_type, data) { sessionManager.appendCustomEntry(_type, data); },
     sendUserMessage: async () => {},
     events: { on() {} },
   };
@@ -3379,6 +3381,7 @@ function makePi(blockDelivery = false) {
     registerTool(candidate) {
       if (candidate.name === "fm_watch_arm_pi") tool = candidate;
     },
+    appendEntry(_type, data) { sessionManager.appendCustomEntry(_type, data); },
     sendUserMessage: async (message) => {
       prompts.push(message);
     },

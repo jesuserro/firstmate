@@ -43,6 +43,26 @@ chmod 700 "$home_a" "$home_b"
 
 run_case "$home_a" startup '[]' ok
 
+pi_bin=$(readlink -f "$(command -v pi)")
+pi_root=$(dirname "$(dirname "$pi_bin")")
+real_session_dir="$TMP_ROOT/real-pi-sessions"
+mkdir -p "$real_session_dir"
+FM_HOME="$home_a" MODULE="$MODULE" PI_MODULE="$pi_root/lib/node_modules/pi-monorepo/dist/index.js" PI_SESSION_DIR="$real_session_dir" node --input-type=module <<'EOF'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const { SessionManager } = await import(process.env.PI_MODULE);
+const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
+const manager = SessionManager.create(process.env.FM_HOME, process.env.PI_SESSION_DIR);
+const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "startup", undefined, manager.appendCustomEntry.bind(manager));
+if (!result.ok || !result.recorded) throw new Error(`real Pi session manager did not bind: ${JSON.stringify(result)}`);
+manager.appendMessage({ role: "user", content: [{ type: "text", text: "real Pi session fixture" }], timestamp: Date.now() });
+const sessionFile = manager.getSessionFile();
+if (!sessionFile || !readFileSync(sessionFile, "utf8").includes("firstmate.pi-home-binding.v1")) {
+  throw new Error(`real Pi session file lacks the durable binding: ${sessionFile}`);
+}
+EOF
+
 session_file="$TMP_ROOT/session-resume.jsonl"
 : > "$session_file"
 chmod 600 "$session_file"

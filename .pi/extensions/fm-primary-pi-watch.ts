@@ -218,8 +218,8 @@ function applyPiHome(home: string): void {
   process.env.FM_CONFIG_OVERRIDE = config;
 }
 
-function bindPiHome(ctx: PiHomeContext | undefined, reason?: string): boolean {
-  const result = resolvePiHome(ctx, fmHome, reason, root);
+function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: string): boolean {
+  const result = resolvePiHome(ctx, fmHome, reason, root, pi.appendEntry.bind(pi));
   if (!result.ok) {
     console.error(`firstmate: Pi home binding refused: ${result.reason}`);
     return false;
@@ -1262,7 +1262,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on?.("session_start", async (event, ctx) => {
-    if (!bindPiHome(ctx, String((event as { reason?: unknown }).reason ?? ""))) return;
+    if (!bindPiHome(ctx, pi, String((event as { reason?: unknown }).reason ?? ""))) return;
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     publishGenerationOwner(generation, "active");

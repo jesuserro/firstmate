@@ -68,7 +68,8 @@ So a running Pi process whose replacement did not load this extension is reporte
 Pi's native session manager is also the durable identity boundary for the
 Firstmate home. On a fresh persisted Pi session, the primary extensions append
 one `firstmate.pi-home-binding.v1` custom entry containing only the canonical,
-owner-validated `FM_HOME`. On `/new` and `/fork`, the new native session seeds
+owner-validated `FM_HOME` through Pi's `ExtensionAPI.appendEntry()` surface. On
+`/new` and `/fork`, the new native session seeds
 the same binding from the already-bound process. On `/resume`, reload, or a
 new process restoring an existing session, the entry wins over inherited
 environment values and is resolved before either extension publishes a marker,

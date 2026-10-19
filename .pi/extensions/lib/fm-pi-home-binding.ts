@@ -64,15 +64,28 @@ function sessionAge(ctx: PiHomeContext, reason: string | undefined): SessionAge 
 
 function safeSessionFile(path: string): boolean {
   if (!path.startsWith("/") || path.includes("\0") || path.includes("\n")) return false;
+  if (resolve(path) !== path) return false;
+  const parentPath = dirname(path);
   try {
-    const file = lstatSync(path);
-    const parent = lstatSync(dirname(path));
-    if (!file.isFile() || !parent.isDirectory() || file.isSymbolicLink() || parent.isSymbolicLink()) return false;
-    if (typeof process.getuid === "function" && (file.uid !== process.getuid() || parent.uid !== process.getuid())) return false;
-    if ((file.mode & 0o022) !== 0 || (parent.mode & 0o022) !== 0) return false;
-    return realpathSync(path) === resolve(path) && realpathSync(dirname(path)) === resolve(dirname(path));
+    const parent = lstatSync(parentPath);
+    if (!parent.isDirectory() || parent.isSymbolicLink()) return false;
+    if (typeof process.getuid === "function" && parent.uid !== process.getuid()) return false;
+    if ((parent.mode & 0o022) !== 0 || realpathSync(parentPath) !== parentPath) return false;
   } catch {
     return false;
+  }
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.isSymbolicLink()) return false;
+    if (typeof process.getuid === "function" && file.uid !== process.getuid()) return false;
+    if ((file.mode & 0o022) !== 0) return false;
+    return realpathSync(path) === path;
+  } catch (error) {
+    // Pi's native SessionManager exposes the canonical future path before it
+    // materializes the JSONL file. This is safe only under the validated,
+    // canonical session directory above; a broken symlink is rejected by
+    // lstatSync rather than treated as an absent file.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }
 
@@ -137,6 +150,7 @@ export function resolvePiHome(
   fallbackHome: string,
   reason: string | undefined,
   sourceRoot?: string,
+  appendEntry?: (customType: string, data?: unknown) => void,
 ): PiHomeResolution {
   const fallback = canonicalHome(fallbackHome);
   if (!fallback) return { ok: false, reason: "the configured FM_HOME is not a safe owned directory" };
@@ -193,7 +207,8 @@ export function resolvePiHome(
       ? "restored Pi session has no durable Firstmate home binding"
       : "Pi session age is ambiguous; refusing to infer its Firstmate home" };
   }
-  if (!sessionManager.appendCustomEntry) {
+  const persistEntry = appendEntry ?? sessionManager.appendCustomEntry;
+  if (!persistEntry) {
     return { ok: false, reason: "Pi session manager cannot persist a Firstmate home binding" };
   }
   try {
@@ -203,7 +218,7 @@ export function resolvePiHome(
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
   try {
-    sessionManager.appendCustomEntry(bindingType, { schema: bindingSchema, home: fallback });
+    persistEntry(bindingType, { schema: bindingSchema, home: fallback });
   } catch (error) {
     return { ok: false, reason: `could not persist Pi session home binding: ${error instanceof Error ? error.message : String(error)}` };
   }
