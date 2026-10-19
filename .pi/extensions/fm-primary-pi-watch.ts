@@ -36,7 +36,7 @@
 // consumption changes.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -55,7 +55,7 @@ import {
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
-import { resolvePiHome, type PiHomeContext } from "./lib/fm-pi-home-binding.ts";
+import { recordPiPrimaryClaim, resolvePiHome, type PiHomeContext } from "./lib/fm-pi-home-binding.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -63,6 +63,11 @@ type ArmResult = {
 };
 
 type LockOwnership = "owned" | "missing" | "other";
+
+type ColdResumeResult = {
+  ok: boolean;
+  message: string;
+};
 
 type CloseClassification = {
   kind: "actionable" | "failure";
@@ -148,6 +153,8 @@ const fmRoot = process.env.FM_ROOT_OVERRIDE || root;
 let state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 let config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 let armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
+let activePiContext: PiHomeContext | undefined;
+let activePiAppendEntry: ((customType: string, data?: unknown) => void) | undefined;
 let marker = `${state}/.pi-watch-extension-loaded`;
 let handoffDir = `${state}/extensions/pi-primary-watch`;
 let actionableHandoff = `${handoffDir}/session-replacement-actionable.json`;
@@ -218,14 +225,14 @@ function applyPiHome(home: string): void {
   process.env.FM_CONFIG_OVERRIDE = config;
 }
 
-function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: string): boolean {
+function bindPiHome(ctx: PiHomeContext | undefined, pi: ExtensionAPI, reason?: string): { ok: boolean; restored: boolean; primary: boolean; primaryLockPid?: string } {
   const result = resolvePiHome(ctx, fmHome, reason, root, pi.appendEntry.bind(pi));
   if (!result.ok) {
     console.error(`firstmate: Pi home binding refused: ${result.reason}`);
-    return false;
+    return { ok: false, restored: false, primary: false };
   }
   applyPiHome(result.home);
-  return true;
+  return { ok: true, restored: result.restored, primary: result.primary, primaryLockPid: result.primaryLockPid };
 }
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();
 const armClose = new WeakMap<ChildProcess, Promise<void>>();
@@ -299,6 +306,51 @@ function lockOwnership(): LockOwnership {
     if (!pid || pid === "1") break;
   }
   return pidAlive(lockPid) ? "other" : "missing";
+}
+
+function recordedLockPid(): string | undefined {
+  try {
+    const lockPath = `${state}/.lock`;
+    const lock = lstatSync(lockPath);
+    if (!lock.isFile() || lock.isSymbolicLink()) return undefined;
+    const pid = readFileSync(lockPath, "utf8").trim();
+    return /^[0-9]+$/.test(pid) && pid !== "1" ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reclaimRestoredLock(expectedPid: string): ColdResumeResult {
+  const recorded = recordedLockPid();
+  if (!recorded) return { ok: false, message: "watcher: restored Pi session refused cold resume because the prior lock is absent or unsafe" };
+  if (recorded !== expectedPid) {
+    return { ok: false, message: "watcher: restored Pi session refused cold resume because a newer lock incarnation replaced its prior owner" };
+  }
+  const ownership = lockOwnership();
+  if (ownership === "owned") return { ok: true, message: "watcher: restored Pi session already owns the session lock" };
+  if (ownership === "other") {
+    return { ok: false, message: "watcher: restored Pi session refused cold resume because another live session owns the lock" };
+  }
+
+  const lockScript = `${fmRoot}/bin/fm-lock.sh`;
+  const result = spawnSync("bash", [lockScript, "--expected-pid", expectedPid], {
+    cwd: fmRoot,
+    encoding: "utf8",
+    timeout: 5000,
+    killSignal: "SIGTERM",
+    env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
+  });
+  if (result.status !== 0 || lockOwnership() !== "owned") {
+    const detail = (result.stderr || result.stdout || "").trim().split(/\r?\n/).slice(-1)[0] || "lock acquisition was not verified";
+    return { ok: false, message: `watcher: restored Pi session could not safely reclaim the session lock (${detail})` };
+  }
+  return { ok: true, message: "watcher: restored Pi session reclaimed its dead-owner session lock" };
+}
+
+function recordVerifiedPrimaryClaim(): boolean {
+  if (!activePiContext?.sessionManager || !activePiAppendEntry) return true;
+  const lockPid = recordedLockPid();
+  return Boolean(lockPid && recordPiPrimaryClaim(activePiContext, fmHome, lockPid, activePiAppendEntry));
 }
 
 // A Pi command started from inside the live session, such as the `pi --help`
@@ -1102,6 +1154,9 @@ export default function (pi: ExtensionAPI) {
         message: "watcher: not armed - no live session holds the lock; run bin/fm-session-start.sh to reclaim it, then call fm_watch_arm_pi to re-arm",
       };
     }
+    if (!recordVerifiedPrimaryClaim()) {
+      return { ok: false, message: "watcher: not armed - verified Pi primary ownership could not be recorded" };
+    }
     publishGenerationOwner(owner, "active");
     if (liveArmChild(owner)) {
       return {
@@ -1262,11 +1317,30 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on?.("session_start", async (event, ctx) => {
-    if (!bindPiHome(ctx, pi, String((event as { reason?: unknown }).reason ?? ""))) return;
+    activePiContext = ctx;
+    activePiAppendEntry = pi.appendEntry.bind(pi);
+    const binding = bindPiHome(ctx, pi, String((event as { reason?: unknown }).reason ?? ""));
+    if (!binding.ok) return;
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
-    publishGenerationOwner(generation, "active");
+    if (binding.restored && !binding.primary && lockOwnership() !== "owned") {
+      console.error("watcher: restored Pi session refused cold resume because it has no prior-primary ownership claim");
+      return;
+    }
+    if (binding.restored && lockOwnership() !== "owned") {
+      const reclaimed = reclaimRestoredLock(binding.primaryLockPid ?? "");
+      if (!reclaimed.ok) {
+        console.error(reclaimed.message);
+        return;
+      }
+      console.error(reclaimed.message);
+    }
     if (lockOwnership() !== "owned") return;
+    if (!recordVerifiedPrimaryClaim()) {
+      console.error("watcher: Pi primary ownership claim could not be recorded");
+      return;
+    }
+    publishGenerationOwner(generation, "active");
     activateOwnedWatch(generation);
   });
   pi.on?.("session_shutdown", async (event) => {

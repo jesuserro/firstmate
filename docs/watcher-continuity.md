@@ -97,11 +97,29 @@ must be retained, use an attended native Pi migration that starts the new
 session in the selected home; this patch does not infer or copy identity into
 an old session.
 
-This identity fix does not claim prompt-free cold recovery of a stale
-Firstmate lock. The existing guarded session-start path and watcher lock
-machinery remain the owners of lock acquisition/reclamation; proving a native
-Herdr server restart automatically re-acquires a stale lock is a separate
-follow-up (upstream issue #2002).
+Cold native Pi resume is deliberately narrower than home binding. A Pi session
+must first prove primary ownership by having the extension observe an owned
+lock immediately before arming and append `firstmate.pi-primary-lock` with the
+canonical session file, home, and exact lock PID incarnation. A fresh Pi start
+that is still unlocked therefore records only its home binding; a later native
+lock acquisition followed by `fm_watch_arm_pi` records the primary claim before
+the watcher starts.
+
+On restored sessions, the claim's PID must match an existing regular,
+non-symlink `.lock`. The extension passes that expected PID to
+`bin/fm-lock.sh --expected-pid`, whose claim lock performs the compare before
+reclaiming the dead owner. A missing/free lock, a replaced PID (including an
+older Pi session restored after a newer primary), a live owner, malformed lock,
+or failed claim refuses without publishing a marker or arming the watcher.
+Only after verified ownership does the extension publish its generation marker,
+update the primary claim for the new PID, and call `activateOwnedWatch`.
+
+This is the native prompt-free cold-resume scope. It does not bypass Pi trust
+dialogs, run the full `fm-session-start.sh` bootstrap, use a poller, or claim a
+lock for a session whose native primary claim is absent. Existing sessions
+created before the primary-claim entry was introduced remain fail-closed and
+must use the documented fresh-session migration path. Issue #2002 remains the
+owner of broader lifecycle behavior outside this exact restored-primary proof.
 
 A main follow-up counts as delivered once Pi accepts it, never once the model reads it.
 The reason is that a follow-up queued while main is streaming joins the running run without a `before_agent_start`.

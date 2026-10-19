@@ -3,6 +3,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const bindingType = "firstmate-pi-home-binding";
 const bindingSchema = "firstmate.pi-home-binding.v1";
+const primaryType = "firstmate-pi-primary-lock";
+const primarySchema = "firstmate.pi-primary-lock.v1";
 
 type SessionEntry = {
   type?: unknown;
@@ -22,7 +24,7 @@ export type PiHomeContext = {
 };
 
 export type PiHomeResolution =
-  | { ok: true; home: string; recorded: boolean }
+  | { ok: true; home: string; recorded: boolean; restored: boolean; primary: boolean; primaryLockPid?: string }
   | { ok: false; reason: string };
 
 type Binding = {
@@ -145,6 +147,46 @@ function sessionBindings(ctx: PiHomeContext): Binding[] {
   return bindings;
 }
 
+function primaryClaimLockPid(ctx: PiHomeContext, home: string, sessionFile: string): string | undefined {
+  const entries = ctx.sessionManager?.getEntries?.() ?? [];
+  const canonicalSessionFile = resolve(sessionFile);
+  let claimed: string | undefined;
+  for (const entry of entries) {
+    if (entry.type !== "custom" || entry.customType !== primaryType) continue;
+    const data = entry.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("Pi primary-lock claim is malformed");
+    }
+    const candidate = data as { schema?: unknown; home?: unknown; sessionFile?: unknown; lockPid?: unknown };
+    if (candidate.schema !== primarySchema || typeof candidate.home !== "string" || typeof candidate.sessionFile !== "string" || typeof candidate.lockPid !== "string") {
+      throw new Error("Pi primary-lock claim is malformed");
+    }
+    const claimedHome = canonicalHome(candidate.home);
+    if (!claimedHome || !candidate.sessionFile.startsWith("/") || resolve(candidate.sessionFile) !== candidate.sessionFile || !/^[0-9]+$/.test(candidate.lockPid) || candidate.lockPid === "1") {
+      throw new Error("Pi primary-lock claim is unsafe");
+    }
+    if (claimedHome === home && resolve(candidate.sessionFile) === canonicalSessionFile) claimed = candidate.lockPid;
+  }
+  return claimed;
+}
+
+export function recordPiPrimaryClaim(
+  ctx: PiHomeContext,
+  home: string,
+  lockPid: string,
+  appendEntry: (customType: string, data?: unknown) => void,
+): boolean {
+  const sessionFile = ctx.sessionManager?.getSessionFile?.();
+  if (!sessionFile || !sessionFile.startsWith("/") || resolve(sessionFile) !== sessionFile || !/^[0-9]+$/.test(lockPid) || lockPid === "1") return false;
+  try {
+    if (primaryClaimLockPid(ctx, home, sessionFile) === lockPid) return true;
+    appendEntry(primaryType, { schema: primarySchema, home, sessionFile, lockPid });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resolvePiHome(
   ctx: PiHomeContext | undefined,
   fallbackHome: string,
@@ -171,7 +213,7 @@ export function resolvePiHome(
       // Explicitly fresh sessions may operate in ephemeral mode when Pi does
       // not expose a persistent session identity. They cannot be restored
       // safely, so no binding is claimed or written.
-      return { ok: true, home: fallback, recorded: false };
+      return { ok: true, home: fallback, recorded: false, restored: false, primary: false };
     }
     return { ok: false, reason: "persistent Pi session identity is unavailable for this session reason" };
   }
@@ -190,12 +232,13 @@ export function resolvePiHome(
   const boundHome = homes[0];
   if (boundHome) {
     try {
-      safeOverride(boundHome, process.env.FM_STATE_OVERRIDE, "FM_STATE_OVERRIDE");
-      safeOverride(boundHome, process.env.FM_CONFIG_OVERRIDE, "FM_CONFIG_OVERRIDE");
+      safeOverride(boundHome, process.env.FM_STATE_OVERRIDE || `${boundHome}/state`, "FM_STATE_OVERRIDE");
+      safeOverride(boundHome, process.env.FM_CONFIG_OVERRIDE || `${boundHome}/config`, "FM_CONFIG_OVERRIDE");
+      const primaryLockPid = primaryClaimLockPid(ctx!, boundHome, sessionFile);
+      return { ok: true, home: boundHome, recorded: true, restored: true, primary: Boolean(primaryLockPid), primaryLockPid };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };
     }
-    return { ok: true, home: boundHome, recorded: true };
   }
 
   // A restored session without an identity cannot safely be upgraded from the
@@ -222,5 +265,5 @@ export function resolvePiHome(
   } catch (error) {
     return { ok: false, reason: `could not persist Pi session home binding: ${error instanceof Error ? error.message : String(error)}` };
   }
-  return { ok: true, home: fallback, recorded: true };
+  return { ok: true, home: fallback, recorded: true, restored: false, primary: false };
 }

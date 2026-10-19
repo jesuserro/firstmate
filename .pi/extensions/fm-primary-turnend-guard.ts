@@ -96,7 +96,7 @@ function markerNamesLiveAncestor(): boolean {
 }
 
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other" || markerNamesLiveAncestor()) return;
+  if (!existsSync(state) || lockOwnership() !== "owned" || markerNamesLiveAncestor()) return;
   writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
 }
 

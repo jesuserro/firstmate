@@ -35,11 +35,22 @@
 # re-anchors.
 #
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
+#        fm-lock.sh --expected-pid <pid>
+#                             reclaim only the exact stale lock incarnation
 #        fm-lock.sh status    print holder and liveness; always exits 0.
 #                             A held lock is not proof the holder is consuming
 #                             wakes. Machine-readable lock fields live on
 #                             fm-inbox.sh ready, from the same inspect helper.
 set -u
+
+EXPECTED_LOCK_PID=
+if [ "${1:-}" = "--expected-pid" ]; then
+  [ "${2:-}" ] || { echo "error: --expected-pid requires a pid" >&2; exit 1; }
+  case "$2" in ''|*[!0-9]*|1) echo "error: expected lock pid is invalid" >&2; exit 1 ;; esac
+  EXPECTED_LOCK_PID=$2
+  shift 2
+fi
+[ "$#" -eq 0 ] || { echo "error: unknown fm-lock.sh argument" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -257,6 +268,21 @@ if [ "$CLAIM_LOCK_HELD" -ne 1 ]; then
     fm_lock_acquire_wait "$CLAIM_LOCK"
   fi
   CLAIM_LOCK_HELD=1
+fi
+
+if [ -n "$EXPECTED_LOCK_PID" ]; then
+  if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then
+    echo "error: expected stale session lock is absent or not a regular file" >&2
+    exit 1
+  fi
+  expected_current=$(cat "$LOCK" 2>/dev/null) || {
+    echo "error: expected stale session lock is unreadable" >&2
+    exit 1
+  }
+  if [ "$expected_current" != "$EXPECTED_LOCK_PID" ]; then
+    echo "error: expected stale session lock owner changed before acquisition" >&2
+    exit 1
+  fi
 fi
 
 if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then

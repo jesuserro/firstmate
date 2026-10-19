@@ -2957,7 +2957,7 @@ const sessionManager = {
   getHeader: () => ({ timestamp: new Date().toISOString() }),
   getSessionFile: () => sessionFile,
   getEntries: () => sessionEntries,
-  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+  appendCustomEntry: (customType, data) => sessionEntries.push({ type: "custom", customType, data }),
 };
 // The lock names the parent of this process: a live strict ancestor, exactly where
 // the real session sits above a nested `pi --help`.
@@ -2974,7 +2974,10 @@ const pi = {
 async function load() {
   const mod = await import(pathToFileURL(process.env.PLUGIN).href);
   mod.default(pi);
-  writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
+  // Session-start marker publication is now lock-gated. This fixture models a
+  // Pi process whose native session-start lock was acquired before loading the
+  // extension; the marker cases below still exercise marker ownership only.
+  writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
   await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
 }
 function expectBoundToThisProcess(label) {
@@ -3092,7 +3095,7 @@ const sessionManager = {
   getHeader: () => ({ timestamp: new Date().toISOString() }),
   getSessionFile: () => sessionFile,
   getEntries: () => sessionEntries,
-  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+  appendCustomEntry: (customType, data) => sessionEntries.push({ type: "custom", customType, data }),
 };
 
 function makePi() {
@@ -3169,8 +3172,8 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const startup = makePi();
 mod.default(startup.pi);
 await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
-if (!/^generation=[1-9][0-9]* phase=active$/.test(extensionOwner())) {
-  throw new Error(`extension bind did not publish its session-start active generation: ${extensionOwner()}`);
+if (extensionOwner()) {
+  throw new Error(`extension published a marker before proving lock ownership: ${extensionOwner()}`);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
@@ -3359,7 +3362,7 @@ const sessionManager = {
   getHeader: () => ({ timestamp: new Date().toISOString() }),
   getSessionFile: () => sessionFile,
   getEntries: () => sessionEntries,
-  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+  appendCustomEntry: (customType, data) => sessionEntries.push({ type: "custom", customType, data }),
 };
 
 let releaseOldDelivery = () => {};
