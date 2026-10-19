@@ -38,7 +38,7 @@ EOF
 
 home_a="$TMP_ROOT/home-a"
 home_b="$TMP_ROOT/home-b"
-mkdir -p "$home_a" "$home_b"
+mkdir -p "$home_a" "$home_b" "$home_a/state-real"
 chmod 700 "$home_a" "$home_b"
 
 run_case "$home_a" startup '[]' ok
@@ -85,6 +85,36 @@ const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "
 if (result.ok || !result.reason.includes("FM_STATE_OVERRIDE")) throw new Error(`cross-home state override was accepted: ${JSON.stringify(result)}`);
 EOF
 
+ln -s "$home_b" "$home_a/state-out"
+ln -s "$home_b" "$home_a/missing-ancestor"
+ln -s "$home_a/state-real" "$home_a/state-in"
+
+for override in "$home_a/state-out" "$home_a/state-out/new" "$home_a/missing-ancestor/new"; do
+  session_file="$TMP_ROOT/session-unsafe-override-${RANDOM}.jsonl"
+  : > "$session_file"
+  chmod 600 "$session_file"
+  FM_HOME="$home_a" FM_STATE_OVERRIDE="$override" FM_SESSION_FILE="$session_file" FM_ENTRIES="$(printf '[{"type":"custom","customType":"firstmate-pi-home-binding","data":{"schema":"firstmate.pi-home-binding.v1","home":"%s"}}]' "$home_a")" MODULE="$MODULE" \
+    node --input-type=module <<'EOF'
+import { pathToFileURL } from "node:url";
+const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
+const manager = { getSessionFile: () => process.env.FM_SESSION_FILE, getEntries: () => JSON.parse(process.env.FM_ENTRIES) };
+const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "resume");
+if (result.ok || !result.reason.includes("FM_STATE_OVERRIDE")) throw new Error(`symlinked cross-home override was accepted: ${JSON.stringify(result)}`);
+EOF
+done
+
+session_file="$TMP_ROOT/session-inside-symlink.jsonl"
+: > "$session_file"
+chmod 600 "$session_file"
+FM_HOME="$home_a" FM_STATE_OVERRIDE="$home_a/state-in/new" FM_SESSION_FILE="$session_file" FM_ENTRIES="$(printf '[{"type":"custom","customType":"firstmate-pi-home-binding","data":{"schema":"firstmate.pi-home-binding.v1","home":"%s"}}]' "$home_a")" MODULE="$MODULE" \
+  node --input-type=module <<'EOF'
+import { pathToFileURL } from "node:url";
+const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
+const manager = { getSessionFile: () => process.env.FM_SESSION_FILE, getEntries: () => JSON.parse(process.env.FM_ENTRIES) };
+const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "resume");
+if (!result.ok) throw new Error(`legitimate in-home symlink was rejected: ${JSON.stringify(result)}`);
+EOF
+
 session_file="$TMP_ROOT/session-ambiguous.jsonl"
 : > "$session_file"
 chmod 600 "$session_file"
@@ -100,6 +130,23 @@ const manager = {
 };
 const result = resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "startup");
 if (result.ok || !result.reason.includes("ambiguous")) throw new Error(`ambiguous session was upgraded: ${JSON.stringify(result)}`);
+EOF
+
+FM_HOME="$home_a" MODULE="$MODULE" node --input-type=module <<'EOF'
+import { pathToFileURL } from "node:url";
+const { resolvePiHome } = await import(pathToFileURL(process.env.MODULE).href);
+for (const [ctx, reason] of [
+  [undefined, "startup"],
+  [{ sessionManager: {} }, "resume"],
+  [{ sessionManager: { getSessionFile: () => undefined } }, "reload"],
+]) {
+  const result = resolvePiHome(ctx, process.env.FM_HOME, reason);
+  if (result.ok || !result.reason.includes("persistent Pi session identity")) {
+    throw new Error(`missing session identity was accepted for ${reason}: ${JSON.stringify(result)}`);
+  }
+}
+const fresh = resolvePiHome(undefined, process.env.FM_HOME, "new");
+if (!fresh.ok || fresh.recorded) throw new Error(`fresh ephemeral mode was not explicit: ${JSON.stringify(fresh)}`);
 EOF
 
 printf '\nall Pi home-binding tests passed\n'

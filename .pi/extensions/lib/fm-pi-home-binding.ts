@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const bindingType = "firstmate-pi-home-binding";
 const bindingSchema = "firstmate.pi-home-binding.v1";
@@ -79,16 +79,36 @@ function safeSessionFile(path: string): boolean {
 function safeOverride(home: string, value: string | undefined, label: string): string | undefined {
   if (!value) return undefined;
   const candidate = resolve(value);
-  const prefix = `${home}/`;
-  if (candidate !== home && !candidate.startsWith(prefix)) {
+  const isWithinHome = (path: string): boolean => {
+    const fromHome = relative(home, path);
+    return fromHome === "" || (!fromHome.startsWith("..") && !isAbsolute(fromHome));
+  };
+  if (!isWithinHome(candidate)) {
     throw new Error(`${label} points outside the bound Pi home`);
   }
-  try {
-    return realpathSync(candidate);
-  } catch {
-    // A not-yet-created child is safe when its lexical path is confined to the
-    // canonical home; the owning Firstmate script creates it below that home.
-    return candidate;
+
+  // Resolve the nearest existing ancestor before accepting a path with a
+  // not-yet-created suffix. This catches an existing symlink ancestor that
+  // redirects outside the bound home.
+  let existing = candidate;
+  while (true) {
+    try {
+      const canonicalExisting = realpathSync(existing);
+      if (!isWithinHome(canonicalExisting)) {
+        throw new Error(`${label} resolves outside the bound Pi home`);
+      }
+      const suffix = relative(existing, candidate);
+      const resolvedCandidate = suffix ? resolve(canonicalExisting, suffix) : canonicalExisting;
+      if (!isWithinHome(resolvedCandidate)) {
+        throw new Error(`${label} resolves outside the bound Pi home`);
+      }
+      return resolvedCandidate;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("resolves outside")) throw error;
+      const parent = dirname(existing);
+      if (parent === existing) throw new Error(`${label} cannot be resolved safely`);
+      existing = parent;
+    }
   }
 }
 
@@ -132,7 +152,15 @@ export function resolvePiHome(
 
   const sessionManager = ctx?.sessionManager;
   const sessionFile = sessionManager?.getSessionFile?.();
-  if (!sessionManager || !sessionFile) return { ok: true, home: fallback, recorded: false };
+  if (!sessionManager || !sessionFile) {
+    if (["new", "fork"].includes(reason ?? "")) {
+      // Explicitly fresh sessions may operate in ephemeral mode when Pi does
+      // not expose a persistent session identity. They cannot be restored
+      // safely, so no binding is claimed or written.
+      return { ok: true, home: fallback, recorded: false };
+    }
+    return { ok: false, reason: "persistent Pi session identity is unavailable for this session reason" };
+  }
   if (!safeSessionFile(sessionFile)) {
     return { ok: false, reason: "Pi session file or its parent is not owned, regular, and non-symlink storage" };
   }

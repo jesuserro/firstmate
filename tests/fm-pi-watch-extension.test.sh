@@ -2950,6 +2950,15 @@ import { pathToFileURL } from "node:url";
 
 const marker = `${process.env.FM_HOME}/state/.pi-watch-extension-loaded`;
 const version = `sha256:${createHash("sha256").update(readFileSync(process.env.PLUGIN)).digest("hex")}`;
+const sessionFile = `${process.env.FM_HOME}/.pi-test-session.jsonl`;
+const sessionEntries = [];
+writeFileSync(sessionFile, "");
+const sessionManager = {
+  getHeader: () => ({ timestamp: new Date().toISOString() }),
+  getSessionFile: () => sessionFile,
+  getEntries: () => sessionEntries,
+  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+};
 // The lock names the parent of this process: a live strict ancestor, exactly where
 // the real session sits above a nested `pi --help`.
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.ppid}\n`);
@@ -2965,7 +2974,7 @@ async function load() {
   const mod = await import(pathToFileURL(process.env.PLUGIN).href);
   mod.default(pi);
   writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-  await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+  await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
 }
 function expectBoundToThisProcess(label) {
   const lines = readFileSync(marker, "utf8").split("\n");
@@ -3075,6 +3084,16 @@ SH
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+const sessionFile = `${process.env.FM_HOME}/.pi-test-session.jsonl`;
+const sessionEntries = [];
+writeFileSync(sessionFile, "");
+const sessionManager = {
+  getHeader: () => ({ timestamp: new Date().toISOString() }),
+  getSessionFile: () => sessionFile,
+  getEntries: () => sessionEntries,
+  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+};
+
 function makePi() {
   const handlers = new Map();
   let tool = null;
@@ -3147,12 +3166,12 @@ const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 
 const startup = makePi();
 mod.default(startup.pi);
-await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
 if (!/^generation=[1-9][0-9]* phase=active$/.test(extensionOwner())) {
   throw new Error(`extension bind did not publish its session-start active generation: ${extensionOwner()}`);
 }
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
-await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+await startup.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
 await waitFor(() => {
   const arm = currentArm();
   return arm.pid && arm.marker && existsSync(arm.marker) && pidAlive(arm.pid);
@@ -3182,7 +3201,7 @@ async function replaceSession(previous, reason) {
     type: "session_start",
     reason,
     previousSessionFile: `/tmp/previous-${reason}.jsonl`,
-  }, {});
+  }, { sessionManager });
   await waitFor(() => {
     const arm = currentArm();
     return arm.pid && arm.marker && arm.marker !== previousArm.marker && existsSync(arm.marker) && pidAlive(arm.pid) && liveArmPids().includes(arm.pid);
@@ -3227,7 +3246,7 @@ if (!sameInstanceArm.marker || !existsSync(sameInstanceArm.marker) || !pidAlive(
 if (!sameInstanceGeneration || extensionOwner() !== `generation=${sameInstanceGeneration} phase=handoff`) {
   throw new Error(`same-instance shutdown did not publish its handoff generation: ${extensionOwner()}`);
 }
-await current.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await current.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, { sessionManager });
 await waitFor(() => {
     const arm = currentArm();
     return arm.pid && arm.marker && arm.marker !== sameInstanceArm.marker && existsSync(arm.marker) && pidAlive(arm.pid) && liveArmPids().includes(arm.pid);
@@ -3330,6 +3349,16 @@ SH
   out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_MARKER_ROOT="$marker_root" FM_TRIGGER_FILE="$trigger" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+const sessionFile = `${process.env.FM_HOME}/.pi-test-session.jsonl`;
+const sessionEntries = [];
+writeFileSync(sessionFile, "");
+const sessionManager = {
+  getHeader: () => ({ timestamp: new Date().toISOString() }),
+  getSessionFile: () => sessionFile,
+  getEntries: () => sessionEntries,
+  appendCustomEntry: (_type, data) => sessionEntries.push({ type: "custom", customType: "firstmate-pi-home-binding", data }),
+};
 
 let releaseOldDelivery = () => {};
 const oldDeliveryRelease = new Promise((resolve) => {
@@ -3540,7 +3569,7 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const originalMod = await import(pathToFileURL(process.env.PLUGIN).href);
 const original = makePi();
 originalMod.default(original.pi);
-await original.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+await original.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, { sessionManager });
 original.handlers.get("agent_start")?.({}, {});
 writeFileSync(process.env.FM_TRIGGER_FILE, "trigger\n");
 await waitFor(
@@ -3552,7 +3581,7 @@ await original.handlers.get("session_shutdown")?.({ type: "session_shutdown", re
 const replacementMod = await import(`${pathToFileURL(process.env.PLUGIN).href}?replacement=streaming-followup`);
 const replacement = makePi();
 replacementMod.default(replacement.pi);
-await replacement.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await replacement.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, { sessionManager });
 await waitFor(
   () => replacement.prompts.some((message) => message.includes("signal: streaming queued actionable outcome")),
   "replacement-session replay",
@@ -3571,7 +3600,7 @@ const finalSession = makePi();
 finalMod.default(finalSession.pi);
 const { unlinkSync } = await import("node:fs");
 unlinkSync(`${process.env.FM_HOME}/state/.lock`);
-await finalSession.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await finalSession.handlers.get("session_start")?.({ type: "session_start", reason: "new" }, { sessionManager });
 if (finalSession.prompts.length !== 0) throw new Error("lockless replacement adopted its handoff early");
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const reclaimed = await finalSession.getTool().execute("reclaimed-arm", {}, undefined, undefined, {});

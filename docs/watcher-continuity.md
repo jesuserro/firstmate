@@ -77,6 +77,12 @@ arms the watcher, or invokes a guard subprocess. `FM_STATE_OVERRIDE` and
 values are exported to child processes. `FM_ROOT_OVERRIDE` must still identify
 the source checkout that loaded the extension.
 
+If Pi does not expose a persistent session manager and file, only an explicitly
+fresh `new` or `fork` reason may run in ephemeral mode with the selected
+`FM_HOME`; that mode records no binding and cannot safely support restore or
+startup inference. `startup`, `resume`, and reload fail closed until a durable
+Pi session identity is available.
+
 Sessions created before this binding existed have no trustworthy home
 evidence. A restored legacy session, malformed entry, conflicting entry,
 ambiguous session timestamp, unsafe session file, or contradictory override
