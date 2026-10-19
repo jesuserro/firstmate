@@ -154,6 +154,20 @@ on_lock_exit() {
 trap on_lock_exit EXIT
 trap 'exit 1' HUP INT TERM
 
+acquire_claim_lock() {
+  [ "$CLAIM_LOCK_HELD" -eq 1 ] && return 0
+  if ! fm_lock_try_acquire "$CLAIM_LOCK"; then
+    local sweep_pid
+    sweep_pid=$(sed -n 's/^pid=//p' "$STATE/.startup-network.status" 2>/dev/null | tail -1)
+    if [ -n "${FM_LOCK_HELD_PID:-}" ] && [ "$FM_LOCK_HELD_PID" = "$sweep_pid" ]; then
+      echo "error: the prior session's bounded startup sweep is finishing; operate read-only until it releases the fleet lock" >&2
+      return 1
+    fi
+    fm_lock_acquire_wait "$CLAIM_LOCK" || return 1
+  fi
+  CLAIM_LOCK_HELD=1
+}
+
 remember_lock_session() {
   [ "$LOCK_SESSION_PHASE" -eq 0 ] || return 0
   if [ -e "$LOCK_SESSION" ] || [ -L "$LOCK_SESSION" ]; then
@@ -247,30 +261,10 @@ refuse_live_owner() {  # <recorded-pid>
   exit 1
 }
 
-if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
-  old=$(cat "$LOCK" 2>/dev/null || true)
-  if [ "$old" = "$me" ] || fm_session_lock_owned_by_self "$STATE"; then
-    confirm_own_lock "$old"
-    old=$(cat "$LOCK" 2>/dev/null || true)
-  fi
-  if [ -z "$REANCHOR" ] && fm_harness_pid_alive "$old"; then
-    refuse_live_owner "$old"
-  fi
-fi
-
-if [ "$CLAIM_LOCK_HELD" -ne 1 ]; then
-  if ! fm_lock_try_acquire "$CLAIM_LOCK"; then
-    sweep_pid=$(sed -n 's/^pid=//p' "$STATE/.startup-network.status" 2>/dev/null | tail -1)
-    if [ -n "${FM_LOCK_HELD_PID:-}" ] && [ "$FM_LOCK_HELD_PID" = "$sweep_pid" ]; then
-      echo "error: the prior session's bounded startup sweep is finishing; operate read-only until it releases the fleet lock" >&2
-      exit 1
-    fi
-    fm_lock_acquire_wait "$CLAIM_LOCK"
-  fi
-  CLAIM_LOCK_HELD=1
-fi
-
 if [ -n "$EXPECTED_LOCK_PID" ]; then
+  # Expected-owner recovery must enter the native claim mutex before any
+  # already-owning fast path can refresh a sidecar or re-anchor the lock.
+  acquire_claim_lock || exit 1
   if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then
     echo "error: expected stale session lock is absent or not a regular file" >&2
     exit 1
@@ -284,6 +278,19 @@ if [ -n "$EXPECTED_LOCK_PID" ]; then
     exit 1
   fi
 fi
+
+if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
+  old=$(cat "$LOCK" 2>/dev/null || true)
+  if [ "$old" = "$me" ] || fm_session_lock_owned_by_self "$STATE"; then
+    confirm_own_lock "$old"
+    old=$(cat "$LOCK" 2>/dev/null || true)
+  fi
+  if [ -z "$REANCHOR" ] && fm_harness_pid_alive "$old"; then
+    refuse_live_owner "$old"
+  fi
+fi
+
+acquire_claim_lock || exit 1
 
 if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
   if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then

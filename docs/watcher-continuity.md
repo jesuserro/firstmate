@@ -114,12 +114,15 @@ or failed claim refuses without publishing a marker or arming the watcher.
 Only after verified ownership does the extension publish its generation marker,
 update the primary claim for the new PID, and call `activateOwnedWatch`.
 
-This is the native prompt-free cold-resume scope. It does not bypass Pi trust
-dialogs, run the full `fm-session-start.sh` bootstrap, use a poller, or claim a
-lock for a session whose native primary claim is absent. Existing sessions
-created before the primary-claim entry was introduced remain fail-closed and
-must use the documented fresh-session migration path. Issue #2002 remains the
-owner of broader lifecycle behavior outside this exact restored-primary proof.
+This is the native automatic lock/watcher recovery scope **after Pi's
+session-only trust confirmation**, when Pi requires that UI gate. It does not
+bypass Pi trust dialogs, run the full `fm-session-start.sh` bootstrap, use a
+poller, or claim a lock for a session whose native primary claim is absent.
+Bare Herdr restore is therefore not advertised as fully prompt-free. Existing
+sessions created before the primary-claim entry was introduced remain
+fail-closed and must use the documented fresh-session migration path. Issue
+#2002 remains the owner of broader lifecycle behavior outside this exact
+restored-primary proof.
 
 A main follow-up counts as delivered once Pi accepts it, never once the model reads it.
 The reason is that a follow-up queued while main is streaming joins the running run without a `before_agent_start`.

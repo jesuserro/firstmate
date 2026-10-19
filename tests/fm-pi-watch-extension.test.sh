@@ -31,12 +31,76 @@ install_pi_watch_extension_fixture() {
     "$repo/node_modules/@earendil-works/pi-coding-agent" \
     "$repo/node_modules/@earendil-works/pi-tui" \
     "$repo/node_modules/typebox"
-  cp "$EXT" "$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cp "$EXT" "$repo/.pi/extensions/fm-primary-pi-watch-impl.ts"
   cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
   cp "$ROOT/.pi/extensions/lib/fm-native-contract.ts" "$repo/.pi/extensions/lib/fm-native-contract.ts"
   cp "$ROOT/.pi/extensions/lib/fm-async-exec.ts" "$repo/.pi/extensions/lib/fm-async-exec.ts"
   cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  cat > "$repo/.pi/extensions/fm-primary-pi-watch.ts" <<'TS'
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import implementation from "./fm-primary-pi-watch-impl.ts";
+
+// Central test harness: direct tool/command fixtures still acquire an owned,
+// file-backed native session context before exercising the product surface.
+// The lock is hidden only during this fresh startup bind so these fixtures keep
+// testing the later native arm boundary rather than session_start auto-arm.
+export default function install(pi) {
+  const handlers = new Map();
+  const originalOn = pi.on?.bind(pi);
+  const originalRegisterTool = pi.registerTool?.bind(pi);
+  const originalRegisterCommand = pi.registerCommand?.bind(pi);
+  const sessionFile = resolve(`${process.env.FM_HOME}/.pi-test-session.jsonl`);
+  mkdirSync(process.env.FM_HOME, { recursive: true });
+  writeFileSync(sessionFile, "", { mode: 0o600 });
+  const entries = [];
+  const sessionManager = {
+    getHeader: () => ({ timestamp: new Date().toISOString() }),
+    getSessionFile: () => sessionFile,
+    getEntries: () => entries,
+    appendCustomEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+  };
+  if (!pi.appendEntry) pi.appendEntry = (customType, data) => sessionManager.appendCustomEntry(customType, data);
+  let started = false;
+  let starting;
+  const ensureStarted = async () => {
+    if (started) return;
+    if (starting) return starting;
+    starting = (async () => {
+      const sessionStart = handlers.get("session_start");
+      if (!sessionStart) throw new Error("test harness did not receive Pi session_start");
+      const lock = resolve(`${process.env.FM_HOME}/state/.lock`);
+      const hidden = `${lock}.pi-test-hidden`;
+      const hadLock = existsSync(lock);
+      if (hadLock) renameSync(lock, hidden);
+      try {
+        await sessionStart({ type: "session_start", reason: "startup" }, { sessionManager });
+        started = true;
+      } finally {
+        if (hadLock) renameSync(hidden, lock);
+      }
+    })();
+    return starting;
+  };
+  pi.on = (event, handler) => {
+    const wrapped = event === "session_start"
+      ? async (...args) => { started = true; return handler(...args); }
+      : handler;
+    handlers.set(event, wrapped);
+    originalOn?.(event, wrapped);
+  };
+  pi.registerTool = (candidate) => originalRegisterTool?.({
+    ...candidate,
+    execute: async (...args) => { await ensureStarted(); return candidate.execute(...args); },
+  });
+  pi.registerCommand = (name, options) => originalRegisterCommand?.(name, {
+    ...options,
+    handler: async (...args) => { await ensureStarted(); return options.handler(...args); },
+  });
+  implementation(pi);
+}
+TS
   cp "$ROOT/.pi/extensions/lib/fm-pi-home-binding.ts" "$repo/.pi/extensions/lib/fm-pi-home-binding.ts"
   mkdir -p "$repo/bin"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
@@ -2949,7 +3013,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const marker = `${process.env.FM_HOME}/state/.pi-watch-extension-loaded`;
-const version = `sha256:${createHash("sha256").update(readFileSync(process.env.PLUGIN)).digest("hex")}`;
+const implementationFile = process.env.PLUGIN.replace(/fm-primary-pi-watch\.ts$/, "fm-primary-pi-watch-impl.ts");
+const version = `sha256:${createHash("sha256").update(readFileSync(implementationFile)).digest("hex")}`;
 const sessionFile = `${process.env.FM_HOME}/.pi-test-session.jsonl`;
 const sessionEntries = [];
 writeFileSync(sessionFile, "");

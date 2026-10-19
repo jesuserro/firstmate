@@ -51,6 +51,7 @@ SH
   chmod +x "$repo/bin/fm-lock.sh"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
+printf 'armed\n' >> "${FM_ARM_LOG:-$FM_HOME/state/.arm-log}"
 printf 'watcher: started pid=%s recovery-generation=test-generation\n' "$PPID"
 sleep 1
 SH
@@ -68,8 +69,12 @@ run_case() {
   make_fixture "$repo"
   : > "$session"
   chmod 600 "$session"
-  if [ "$mode" = manual ]; then
+  if [ "$mode" = manual ] || [ "$mode" = rejected ] || [ "$mode" = unsafe-session ]; then
     rm -f "$home/state/.lock"
+  fi
+  if [ "$mode" = unsafe-session ]; then
+    rm -f "$session"
+    ln -s "$home/session-target.jsonl" "$session"
   else
     printf '%s\n' "$current_pid" > "$home/state/.lock"
   fi
@@ -80,7 +85,7 @@ import { resolve } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const handlers = new Map();
-const entries = process.env.FM_MODE === "manual" ? [] : [
+const entries = ["manual", "rejected", "unsafe-session"].includes(process.env.FM_MODE) ? [] : [
   { type: "custom", customType: "firstmate-pi-home-binding", data: { schema: "firstmate.pi-home-binding.v1", home: process.env.FM_HOME } },
   { type: "custom", customType: "firstmate-pi-primary-lock", data: { schema: "firstmate.pi-primary-lock.v1", home: process.env.FM_HOME, sessionFile: process.env.FM_SESSION, lockPid: process.env.FM_PRIMARY_PID } },
 ];
@@ -99,8 +104,15 @@ const pi = {
 };
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const bindingMod = await import(pathToFileURL(`${process.env.PLUGIN.replace('/fm-primary-pi-watch.ts', '/lib/fm-pi-home-binding.ts')}`).href);
+if (process.env.FM_MODE === "rejected") {
+  entries.push({ type: "custom", customType: "firstmate-pi-home-binding", data: { schema: "wrong.schema", home: process.env.FM_HOME } });
+}
+if (["rejected", "unsafe-session"].includes(process.env.FM_MODE)) {
+  writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+}
 const bindingProbe = bindingMod.resolvePiHome({ sessionManager: manager }, process.env.FM_HOME, "startup");
-if (process.env.FM_MODE !== "manual" && (!bindingProbe.ok || !bindingProbe.primary)) throw new Error(`fixture primary claim probe failed: ${JSON.stringify(bindingProbe)} helper=${readFileSync(pathToFileURL(`${process.env.PLUGIN.replace('/fm-primary-pi-watch.ts', '/lib/fm-pi-home-binding.ts')}`).pathname, 'utf8').includes('primaryType')} manager=${manager.getSessionFile()} resolved=${resolve(manager.getSessionFile())} entry=${JSON.stringify(entries[1])}`);
+if (!["manual", "rejected", "unsafe-session"].includes(process.env.FM_MODE) && (!bindingProbe.ok || !bindingProbe.primary)) throw new Error(`fixture primary claim probe failed: ${JSON.stringify(bindingProbe)} helper=${readFileSync(pathToFileURL(`${process.env.PLUGIN.replace('/fm-primary-pi-watch.ts', '/lib/fm-pi-home-binding.ts')}`).pathname, 'utf8').includes('primaryType')} manager=${manager.getSessionFile()} resolved=${resolve(manager.getSessionFile())} entry=${JSON.stringify(entries[1])}`);
+if (["rejected", "unsafe-session"].includes(process.env.FM_MODE) && bindingProbe.ok) throw new Error(`unsafe binding fixture was accepted: ${JSON.stringify(bindingProbe)}`);
 mod.default(pi);
 await handlers.get("session_start")({ reason: "startup" }, { sessionManager: manager });
 if (process.env.FM_MODE === "manual") {
@@ -110,6 +122,16 @@ if (process.env.FM_MODE === "manual") {
   if (!armed.details?.ok || !entries.some((entry) => entry.customType === "firstmate-pi-primary-lock")) {
     throw new Error(`manual arm did not record primary claim: ${JSON.stringify(armed.details)} entries=${JSON.stringify(entries)}`);
   }
+  process.exit(0);
+}
+if (["rejected", "unsafe-session"].includes(process.env.FM_MODE)) {
+  const refused = await tool.execute("rejected-arm", {}, undefined, undefined, {});
+  if (refused.details?.ok || !String(refused.details?.message ?? "").includes("refused")) {
+    throw new Error(`rejected binding was armable: ${JSON.stringify(refused.details)}`);
+  }
+  if (existsSync(`${process.env.FM_HOME}/state/.pi-watch-extension-loaded`)) throw new Error("rejected binding published a marker");
+  if (entries.some((entry) => entry.customType === "firstmate-pi-primary-lock")) throw new Error("rejected binding recorded a primary claim");
+  if (existsSync(`${process.env.FM_HOME}/state/.arm-log`)) throw new Error("rejected binding started a watcher");
   process.exit(0);
 }
 const lock = readFileSync(`${process.env.FM_HOME}/state/.lock`, "utf8").trim();
@@ -127,4 +149,6 @@ run_case stale reclaimed
 run_case live refused
 run_case replaced refused
 run_case manual manual
+run_case rejected refused
+run_case unsafe-session refused
 printf 'ok - restored Pi cold resume reclaims only a dead owner and refuses a live owner\n'

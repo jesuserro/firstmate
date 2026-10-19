@@ -25,4 +25,16 @@ fi
 grep -q 'lock acquired: harness pid' "$HOME_ROOT/state/match.out" \
   || fail "expected-pid CAS did not report verified acquisition"
 
+SELF_HOME="$TMP_ROOT/self-home"
+mkdir -p "$SELF_HOME/state" "$SELF_HOME/config"
+if FM_HOME="$SELF_HOME" FM_ROOT_OVERRIDE="$ROOT" "$PI" -c \
+  'printf "%s\n" "$$" > "$FM_HOME/state/.lock"; exec "$FM_ROOT_OVERRIDE/bin/fm-lock.sh" --expected-pid 77777777' \
+  > "$SELF_HOME/self-mismatch.out" 2>&1; then
+  fail "expected-pid CAS accepted a mismatch through the owned-lock fast path"
+fi
+[ "$(cat "$SELF_HOME/state/.lock")" != 77777777 ] || fail "owned-lock mismatch rewrote the lock"
+[ ! -e "$SELF_HOME/state/.lock-session" ] || fail "owned-lock mismatch wrote a session sidecar"
+grep -q 'expected stale session lock owner changed' "$SELF_HOME/self-mismatch.out" \
+  || fail "owned-lock mismatch did not fail at the exact-PID check"
+
 pass "fm-lock expected-pid CAS refuses replacement and reclaims only the exact stale incarnation"
